@@ -1,0 +1,402 @@
+#!/usr/bin/env node
+
+/**
+ * NEWS NINJA - ARTICLE GENERATOR WITH GOOGLE CUSTOM SEARCH
+ * 
+ * Uses Google Custom Search API
+ * FREE: 100 queries/day (no credit card needed!)
+ * 
+ * Setup:
+ * 1. Go to: https://developers.google.com/custom-search/v1/overview
+ * 2. Click "Get a Key" -> Create project -> Enable API
+ * 3. Get API key (no credit card required for 100/day)
+ * 4. Go to: https://programmablesearchengine.google.com/
+ * 5. Create search engine -> Search entire web
+ * 6. Get Search Engine ID (cx)
+ * 7. Add to .env:
+ *    GOOGLE_API_KEY=your_api_key
+ *    GOOGLE_SEARCH_ENGINE_ID=your_cx_id
+ */
+
+const axios = require('axios');
+const db = require('./src/config/database');
+require('dotenv').config();
+
+// Configuration
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || '';
+const GOOGLE_CX = process.env.GOOGLE_SEARCH_ENGINE_ID || '';
+const MODEL = 'mistral-nemo:latest';
+const NUM_COUNTRIES = parseInt(process.argv[2]) || 2;
+const TRENDS_PER_COUNTRY = parseInt(process.argv[3]) || 2;
+
+if (!GOOGLE_API_KEY || !GOOGLE_CX) {
+  console.error('\n❌ ERROR: Google API credentials not found');
+  console.error('\n📝 Quick Setup (5 minutes):');
+  console.error('');
+  console.error('1. Get API Key (FREE 100 queries/day):');
+  console.error('   https://developers.google.com/custom-search/v1/overview');
+  console.error('   Click "Get a Key" -> No credit card needed!');
+  console.error('');
+  console.error('2. Create Search Engine:');
+  console.error('   https://programmablesearchengine.google.com/');
+  console.error('   Create -> Search entire web -> Get CX ID');
+  console.error('');
+  console.error('3. Add to backend/.env:');
+  console.error('   GOOGLE_API_KEY=your_key_here');
+  console.error('   GOOGLE_SEARCH_ENGINE_ID=your_cx_here');
+  console.error('');
+  process.exit(1);
+}
+
+// Language mapping
+const COUNTRY_LANGUAGE_MAP = {
+  'US': 'en', 'GB': 'en', 'CA': 'en', 'AU': 'en', 'NZ': 'en', 'IE': 'en',
+  'IN': 'en', 'IT': 'it', 'ES': 'es', 'MX': 'es', 'AR': 'es', 'CO': 'es',
+  'FR': 'fr', 'BE': 'fr', 'DE': 'de', 'AT': 'de', 'CH': 'de',
+  'PT': 'pt', 'BR': 'pt', 'JP': 'ja', 'CN': 'zh', 'KR': 'ko',
+  'RU': 'ru', 'NL': 'nl', 'SE': 'sv', 'NO': 'no', 'DK': 'da',
+  'PL': 'pl', 'TR': 'tr', 'GR': 'el', 'CZ': 'cs', 'FI': 'fi'
+};
+
+const LANGUAGE_NAMES = {
+  'en': 'English', 'it': 'Italian', 'es': 'Spanish', 'fr': 'French',
+  'de': 'German', 'pt': 'Portuguese', 'ja': 'Japanese', 'zh': 'Chinese',
+  'ru': 'Russian', 'nl': 'Dutch', 'sv': 'Swedish', 'no': 'Norwegian',
+  'da': 'Danish', 'pl': 'Polish', 'tr': 'Turkish', 'el': 'Greek',
+  'cs': 'Czech', 'fi': 'Finnish', 'ko': 'Korean'
+};
+
+// Statistics
+let stats = {
+  articlesGenerated: 0,
+  articlesSuccess: 0,
+  articlesFailed: 0,
+  searchesPerformed: 0,
+  searchesSuccess: 0,
+  searchesFailed: 0,
+  quotaRemaining: 100,
+  startTime: Date.now()
+};
+
+function log(message, type = 'info') {
+  const timestamp = new Date().toISOString().substring(11, 19);
+  const icons = { 
+    info: 'ℹ️', success: '✅', error: '❌', 
+    warning: '⚠️', search: '🔍', ai: '🤖', quota: '📊'
+  };
+  console.log(`[${timestamp}] ${icons[type] || '•'} ${message}`);
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function generateMockTrends(countryCode) {
+  const topics = [
+    'artificial intelligence 2024', 'renewable energy news', 'electric vehicles',
+    'remote work trends', 'cryptocurrency updates', 'climate change solutions',
+    'space exploration news', '5G technology', 'quantum computing',
+    'biotechnology advances', 'robotics industry', 'cybersecurity news',
+    'virtual reality', 'blockchain applications', 'sustainable technology',
+    'mental health awareness', 'online education trends', 'smart cities',
+    'genomics research', 'autonomous vehicles'
+  ];
+  
+  const shuffled = topics.sort(() => 0.5 - Math.random());
+  
+  return shuffled.slice(0, TRENDS_PER_COUNTRY).map((keyword, index) => ({
+    keyword,
+    visitors: Math.floor(Math.random() * 1000) + 500,
+    growthRate: Math.floor(Math.random() * 80) + 20
+  }));
+}
+
+// Google Custom Search
+async function searchGoogle(query, language = 'en') {
+  try {
+    log(`Google Search: "${query}" (${language})`, 'search');
+    stats.searchesPerformed++;
+    stats.quotaRemaining--;
+    
+    const response = await axios.get('https://www.googleapis.com/customsearch/v1', {
+      params: {
+        key: GOOGLE_API_KEY,
+        cx: GOOGLE_CX,
+        q: query,
+        num: 5,
+        lr: `lang_${language}`,
+        dateRestrict: 'm6' // Last 6 months
+      },
+      timeout: 10000
+    });
+
+    if (!response.data.items || response.data.items.length === 0) {
+      log(`No results for "${query}"`, 'warning');
+      stats.searchesFailed++;
+      return null;
+    }
+
+    const results = response.data.items.slice(0, 5);
+    
+    const searchContext = results
+      .map((r, i) => {
+        const title = r.title || '';
+        const snippet = r.snippet || '';
+        return `[Source ${i + 1}] ${title}\n${snippet}`;
+      })
+      .join('\n\n');
+
+    stats.searchesSuccess++;
+    log(`✅ Found ${results.length} results (Quota: ${stats.quotaRemaining}/100)`, 'success');
+    
+    return searchContext;
+
+  } catch (error) {
+    stats.searchesFailed++;
+    
+    if (error.response) {
+      if (error.response.status === 429) {
+        log(`❌ QUOTA EXCEEDED! Daily limit reached.`, 'error');
+        log(`You have 100 free queries/day. Wait 24h or upgrade.`, 'warning');
+      } else if (error.response.status === 403) {
+        log(`❌ API Key invalid or not enabled`, 'error');
+      } else {
+        log(`Google API error: ${error.response.status}`, 'error');
+      }
+    } else {
+      log(`Search failed: ${error.message}`, 'error');
+    }
+    
+    return null;
+  }
+}
+
+async function generateWithOllama(prompt, maxTokens = 2000) {
+  try {
+    const response = await axios.post(
+      `${OLLAMA_URL}/api/generate`,
+      {
+        model: MODEL,
+        prompt: prompt,
+        stream: false,
+        options: {
+          temperature: 0.7,
+          top_p: 0.9,
+          num_predict: maxTokens
+        }
+      },
+      { timeout: 120000 }
+    );
+    return response.data.response;
+  } catch (error) {
+    log(`Ollama error: ${error.message}`, 'error');
+    throw error;
+  }
+}
+
+async function generateArticle(trend, countryCode, countryName, rank) {
+  try {
+    log(`\nGenerating: "${trend.keyword}" (${countryName})`, 'ai');
+    stats.articlesGenerated++;
+
+    const language = COUNTRY_LANGUAGE_MAP[countryCode] || 'en';
+    const languageName = LANGUAGE_NAMES[language] || 'English';
+
+    // Step 1: Google Search
+    const searchData = await searchGoogle(trend.keyword, language);
+    await sleep(1000); // Rate limiting
+
+    let researchInfo;
+    if (searchData) {
+      researchInfo = `REAL WEB SEARCH RESULTS FROM GOOGLE:\n${searchData}`;
+    } else {
+      log(`No search results, using AI knowledge`, 'warning');
+      researchInfo = `TOPIC: ${trend.keyword}\nTrending topic - use your knowledge base.`;
+    }
+
+    // Step 2: Generate with Ollama
+    const articlePrompt = `You are a professional journalist writing for ${countryName}.
+
+TOPIC: ${trend.keyword}
+TREND DATA: ${trend.visitors} visitors, ${trend.growthRate}% growth
+
+${researchInfo}
+
+Write a comprehensive news article in ${languageName}:
+
+FORMAT:
+HEADLINE: [Catchy headline, max 100 characters]
+
+SUMMARY: [2-3 sentence compelling summary]
+
+CONTENT:
+[4-6 well-structured paragraphs, 600-800 words total]
+
+REQUIREMENTS:
+- Write ENTIRELY in ${languageName}
+- Use web search information if provided
+- Be factual, engaging, natural
+- Relevant for ${countryName} audience`;
+
+    log(`Ollama generating (${languageName})...`, 'ai');
+    const fullArticle = await generateWithOllama(articlePrompt, 2500);
+    await sleep(1000);
+
+    const parsed = parseArticle(fullArticle);
+
+    // Step 3: Save to database
+    const articleId = await saveArticle({
+      title: parsed.title,
+      summary: parsed.summary,
+      content: parsed.content,
+      countryCode,
+      countryName,
+      language,
+      trendKeyword: trend.keyword,
+      trendRank: rank,
+      searchQueries: [trend.keyword],
+      sources: searchData ? ['Google Search', 'AI Generated'] : ['AI Generated']
+    });
+
+    const searchIcon = searchData ? '🔍✅' : '🤖';
+    log(`${searchIcon} Saved (ID: ${articleId}): "${parsed.title.substring(0, 50)}..."`, 'success');
+    stats.articlesSuccess++;
+
+    return { id: articleId, ...parsed };
+
+  } catch (error) {
+    log(`Failed: ${error.message}`, 'error');
+    stats.articlesFailed++;
+    return null;
+  }
+}
+
+function parseArticle(text) {
+  const headlineMatch = text.match(/HEADLINE:\s*(.+?)(?:\n|$)/i);
+  const summaryMatch = text.match(/SUMMARY:\s*(.+?)(?:\n\n|CONTENT:)/is);
+  const contentMatch = text.match(/CONTENT:\s*(.+)$/is);
+
+  return {
+    title: headlineMatch ? headlineMatch[1].trim() : 'Untitled Article',
+    summary: summaryMatch ? summaryMatch[1].trim() : '',
+    content: contentMatch ? contentMatch[1].trim() : text
+  };
+}
+
+async function saveArticle(data) {
+  const query = `
+    INSERT INTO articles (
+      title, summary, content, country_code, country_name,
+      language, trend_keyword, trend_rank, search_queries, sources
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    RETURNING id
+  `;
+
+  const values = [
+    data.title,
+    data.summary,
+    data.content,
+    data.countryCode,
+    data.countryName,
+    data.language,
+    data.trendKeyword,
+    data.trendRank,
+    data.searchQueries,
+    data.sources
+  ];
+
+  const result = await db.query(query, values);
+  return result.rows[0].id;
+}
+
+async function generateArticles() {
+  console.log('\n');
+  console.log('═══════════════════════════════════════════════════════════════════');
+  console.log('       NEWS NINJA - GENERATOR WITH GOOGLE SEARCH (FREE!)');
+  console.log('═══════════════════════════════════════════════════════════════════');
+  console.log('');
+  log(`Configuration:`, 'info');
+  log(`  Countries: ${NUM_COUNTRIES}`, 'info');
+  log(`  Trends per country: ${TRENDS_PER_COUNTRY}`, 'info');
+  log(`  Model: ${MODEL}`, 'info');
+  log(`  Search: Google Custom Search API`, 'info');
+  log(`  Total articles: ${NUM_COUNTRIES * TRENDS_PER_COUNTRY}`, 'info');
+  log(`  Daily quota: 100 searches`, 'quota');
+  console.log('');
+
+  const countries = [
+    { code: 'US', name: 'United States' },
+    { code: 'IT', name: 'Italy' },
+    { code: 'ES', name: 'Spain' },
+    { code: 'FR', name: 'France' },
+    { code: 'DE', name: 'Germany' },
+    { code: 'GB', name: 'United Kingdom' },
+    { code: 'BR', name: 'Brazil' },
+    { code: 'JP', name: 'Japan' },
+    { code: 'CA', name: 'Canada' },
+    { code: 'AU', name: 'Australia' }
+  ];
+
+  const selectedCountries = countries.slice(0, NUM_COUNTRIES);
+
+  for (const country of selectedCountries) {
+    log(`\n▶ Processing ${country.name} (${country.code})`, 'info');
+    console.log('─'.repeat(70));
+
+    const trends = generateMockTrends(country.code);
+
+    for (let i = 0; i < trends.length; i++) {
+      const trend = trends[i];
+      log(`Trend ${i + 1}/${trends.length}: "${trend.keyword}"`, 'info');
+
+      await generateArticle(trend, country.code, country.name, i + 1);
+
+      if (i < trends.length - 1) {
+        log('Waiting 2 seconds...', 'info');
+        await sleep(2000);
+      }
+    }
+
+    log(`✅ Completed ${country.name}`, 'success');
+  }
+
+  const duration = ((Date.now() - stats.startTime) / 1000 / 60).toFixed(2);
+
+  console.log('\n');
+  console.log('═══════════════════════════════════════════════════════════════════');
+  console.log('                     GENERATION COMPLETE!');
+  console.log('═══════════════════════════════════════════════════════════════════');
+  console.log('');
+  log(`📊 STATISTICS:`, 'success');
+  log(`  ✅ Articles: ${stats.articlesSuccess} success, ${stats.articlesFailed} failed`, 'info');
+  log(`  🔍 Searches: ${stats.searchesPerformed} performed`, 'info');
+  log(`  ✅ Successful: ${stats.searchesSuccess}`, 'success');
+  log(`  ❌ Failed: ${stats.searchesFailed}`, 'warning');
+  log(`  📊 Google quota used: ${stats.searchesPerformed}/100`, 'quota');
+  log(`  📊 Remaining today: ~${100 - stats.searchesPerformed}`, 'quota');
+  log(`  ⏱️  Duration: ${duration} minutes`, 'info');
+  if (stats.articlesSuccess > 0) {
+    log(`  ⚡ Average: ${(duration / stats.articlesSuccess).toFixed(2)} min/article`, 'info');
+  }
+  const searchRate = stats.searchesPerformed > 0 
+    ? ((stats.searchesSuccess / stats.searchesPerformed) * 100).toFixed(1)
+    : 0;
+  log(`  📈 Search success rate: ${searchRate}%`, 'info');
+  console.log('');
+  console.log('🌐 View articles at: http://localhost:3000');
+  console.log('═══════════════════════════════════════════════════════════════════');
+  console.log('');
+}
+
+(async () => {
+  try {
+    await generateArticles();
+    process.exit(0);
+  } catch (error) {
+    log(`Fatal error: ${error.message}`, 'error');
+    console.error(error);
+    process.exit(1);
+  }
+})();
