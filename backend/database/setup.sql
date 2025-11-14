@@ -4,17 +4,26 @@
 -- ===================================================
 
 -- Crea utente (esegui come postgres superuser)
-CREATE USER newsninja WITH PASSWORD 'newsninja123' CREATEDB;
-GRANT ALL PRIVILEGES ON DATABASE newsninja TO newsninja;
+DO
+$$
+BEGIN
+   IF NOT EXISTS (SELECT FROM pg_catalog.pg_user WHERE usename = 'newsninja') THEN
+      CREATE USER newsninja WITH PASSWORD 'newsninja123' CREATEDB;
+   END IF;
+END
+$$;
 
 -- Crea il database
-CREATE DATABASE newsninja OWNER newsninja;
+SELECT 'CREATE DATABASE newsninja OWNER newsninja'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'newsninja')\gexec
+
+GRANT ALL PRIVILEGES ON DATABASE newsninja TO newsninja;
 \c newsninja
 
 -- ===================================================
 -- TABELLA ARTICOLI
 -- ===================================================
-CREATE TABLE articles (
+CREATE TABLE IF NOT EXISTS articles (
     id SERIAL PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     summary TEXT,
@@ -27,38 +36,38 @@ CREATE TABLE articles (
     likes INTEGER DEFAULT 0,
     published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Indici per performance
-    INDEX idx_articles_status (status),
-    INDEX idx_articles_country (country_code),
-    INDEX idx_articles_published (published_at DESC),
-    INDEX idx_articles_views (views DESC)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Indici per performance della tabella articles
+CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status);
+CREATE INDEX IF NOT EXISTS idx_articles_country ON articles(country_code);
+CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_articles_views ON articles(views DESC);
 
 -- ===================================================
 -- TABELLA VISUALIZZAZIONI ARTICOLI (per analytics)
 -- ===================================================
-CREATE TABLE article_views (
+CREATE TABLE IF NOT EXISTS article_views (
     id SERIAL PRIMARY KEY,
     article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
     viewer_country VARCHAR(100) DEFAULT 'Unknown',
     viewer_country_code VARCHAR(2) DEFAULT 'XX',
     viewer_ip INET,
     user_agent TEXT,
-    viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Indici per analytics
-    INDEX idx_views_article (article_id),
-    INDEX idx_views_country (viewer_country_code),
-    INDEX idx_views_date (viewed_at DESC),
-    INDEX idx_views_ip (viewer_ip)
+    viewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Indici per analytics della tabella article_views
+CREATE INDEX IF NOT EXISTS idx_views_article ON article_views(article_id);
+CREATE INDEX IF NOT EXISTS idx_views_country ON article_views(viewer_country_code);
+CREATE INDEX IF NOT EXISTS idx_views_date ON article_views(viewed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_views_ip ON article_views(viewer_ip);
 
 -- ===================================================
 -- TABELLA PAESI (per lookup trend e analytics)
 -- ===================================================
-CREATE TABLE countries (
+CREATE TABLE IF NOT EXISTS countries (
     id SERIAL PRIMARY KEY,
     country_code VARCHAR(2) NOT NULL UNIQUE,
     country_name VARCHAR(100) NOT NULL,
@@ -83,12 +92,13 @@ INSERT INTO countries (country_code, country_name, country_name_it, iso_numeric,
 ('PT', 'Portugal', 'Portogallo', 620, 'Europe', 10300000),
 ('BR', 'Brazil', 'Brasile', 76, 'Americas', 214000000),
 ('AR', 'Argentina', 'Argentina', 32, 'Americas', 45000000),
-('MX', 'Mexico', 'Messico', 484, 'Americas', 126000000);
+('MX', 'Mexico', 'Messico', 484, 'Americas', 126000000)
+ON CONFLICT (country_code) DO NOTHING;
 
 -- ===================================================
 -- TABELLA TREND (parole chiave di tendenza)
 -- ===================================================
-CREATE TABLE trends (
+CREATE TABLE IF NOT EXISTS trends (
     id SERIAL PRIMARY KEY,
     keyword VARCHAR(100) NOT NULL,
     country_code VARCHAR(2) REFERENCES countries(country_code),
@@ -97,33 +107,34 @@ CREATE TABLE trends (
     trend_score FLOAT DEFAULT 0.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP,
-    
-    -- Indici
-    UNIQUE (keyword, country_code),
-    INDEX idx_trends_country (country_code),
-    INDEX idx_trends_trending (is_trending),
-    INDEX idx_trends_score (trend_score DESC)
+    UNIQUE (keyword, country_code)
 );
+
+-- Indici per tabella trends
+CREATE INDEX IF NOT EXISTS idx_trends_country ON trends(country_code);
+CREATE INDEX IF NOT EXISTS idx_trends_trending ON trends(is_trending);
+CREATE INDEX IF NOT EXISTS idx_trends_score ON trends(trend_score DESC);
 
 -- ===================================================
 -- TABELLA RELAZIONE ARTICOLI-TREND
 -- ===================================================
-CREATE TABLE article_trends (
+CREATE TABLE IF NOT EXISTS article_trends (
     id SERIAL PRIMARY KEY,
     article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
     trend_id INTEGER REFERENCES trends(id) ON DELETE CASCADE,
     relevance_score FLOAT DEFAULT 1.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE (article_id, trend_id),
-    INDEX idx_article_trends_article (article_id),
-    INDEX idx_article_trends_trend (trend_id)
+    UNIQUE (article_id, trend_id)
 );
+
+-- Indici per tabella article_trends
+CREATE INDEX IF NOT EXISTS idx_article_trends_article ON article_trends(article_id);
+CREATE INDEX IF NOT EXISTS idx_article_trends_trend ON article_trends(trend_id);
 
 -- ===================================================
 -- TABELLA USERS (per future feature di autenticazione)
 -- ===================================================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
@@ -137,21 +148,22 @@ CREATE TABLE users (
 -- ===================================================
 -- TABELLA LIKES (interazioni utente-articolo)
 -- ===================================================
-CREATE TABLE article_likes (
+CREATE TABLE IF NOT EXISTS article_likes (
     id SERIAL PRIMARY KEY,
     article_id INTEGER REFERENCES articles(id) ON DELETE CASCADE,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE (article_id, user_id),
-    INDEX idx_likes_article (article_id),
-    INDEX idx_likes_user (user_id)
+    UNIQUE (article_id, user_id)
 );
+
+-- Indici per tabella article_likes
+CREATE INDEX IF NOT EXISTS idx_likes_article ON article_likes(article_id);
+CREATE INDEX IF NOT EXISTS idx_likes_user ON article_likes(user_id);
 
 -- ===================================================
 -- TABELLA CONFIG (parametri di sistema)
 -- ===================================================
-CREATE TABLE app_config (
+CREATE TABLE IF NOT EXISTS app_config (
     id SERIAL PRIMARY KEY,
     key VARCHAR(100) UNIQUE NOT NULL,
     value TEXT,
@@ -165,7 +177,8 @@ INSERT INTO app_config (key, value, description) VALUES
 ('app.version', '1.0.0', 'Versione attuale'),
 ('ollama.model', 'mistral-nemo:latest', 'Modello LLM predefinito'),
 ('max.articles.per.page', '50', 'Massimo articoli per pagina'),
-('trends.expiry.days', '7', 'Durata trend in giorni');
+('trends.expiry.days', '7', 'Durata trend in giorni')
+ON CONFLICT (key) DO NOTHING;
 
 -- ===================================================
 -- TRIGGER PER AGGIORNARE TIMESTAMP
@@ -179,9 +192,10 @@ END;
 $$ language 'plpgsql';
 
 -- Applica trigger alla tabella articles
-CREATE TRIGGER update_articles_updated_at 
-    BEFORE UPDATE ON articles 
-    FOR EACH ROW 
+DROP TRIGGER IF EXISTS update_articles_updated_at ON articles;
+CREATE TRIGGER update_articles_updated_at
+    BEFORE UPDATE ON articles
+    FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
 -- ===================================================
@@ -189,7 +203,7 @@ CREATE TRIGGER update_articles_updated_at
 -- ===================================================
 -- Funzione per ottenere trend score ponderato
 CREATE OR REPLACE FUNCTION get_trend_score(
-    p_search_volume INTEGER, 
+    p_search_volume INTEGER,
     p_article_count INTEGER
 )
 RETURNS FLOAT AS $$
@@ -202,8 +216,9 @@ $$ LANGUAGE plpgsql;
 -- VISTE MATERIALIZZATE PER PERFORMANCE (opzionale)
 -- ===================================================
 -- Vista per articoli popolari per paese
+DROP MATERIALIZED VIEW IF EXISTS popular_articles_by_country;
 CREATE MATERIALIZED VIEW popular_articles_by_country AS
-SELECT 
+SELECT
     a.country_code,
     a.country_name,
     a.id,
@@ -215,8 +230,8 @@ FROM articles a
 WHERE a.status = 'published'
   AND a.published_at > CURRENT_DATE - INTERVAL '7 days';
 
--- Refresh view ogni ora
-CREATE INDEX idx_popular_articles_country ON popular_articles_by_country(country_code, rank);
+-- Indice per la materialized view
+CREATE INDEX IF NOT EXISTS idx_popular_articles_country ON popular_articles_by_country(country_code, rank);
 
 -- ===================================================
 -- DATI DI ESERCIZIO
@@ -227,30 +242,37 @@ INSERT INTO trends (keyword, country_code, search_volume, trend_score) VALUES
 ('Ollama update', 'IT', 800, 0.8),
 ('Machine learning', 'US', 3000, 2.5),
 ('Local LLM', 'US', 1200, 1.1),
-('Italian tech news', 'IT', 600, 0.6);
+('Italian tech news', 'IT', 600, 0.6)
+ON CONFLICT (keyword, country_code) DO NOTHING;
 
--- Inserisci articoli di esempio
-INSERT INTO articles (title, summary, content, country_code, trend_keywords, views) VALUES
-('AI e Machine Learning: le ultime novità italiane', 
- 'Scopri gli ultimi sviluppi nell''intelligenza artificiale in Italia con focus su Ollama e modelli locali',
- 'Contenuto completo sull''AI in Italia... [contenuto generato con Ollama]',
- 'IT', 
- ARRAY['AI news', 'Machine learning', 'Italian tech'], 
- 45),
+-- Inserisci articoli di esempio solo se la tabella è vuota
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM articles LIMIT 1) THEN
+        INSERT INTO articles (title, summary, content, country_code, trend_keywords, views) VALUES
+        ('AI e Machine Learning: le ultime novità italiane',
+         'Scopri gli ultimi sviluppi nell''intelligenza artificiale in Italia con focus su Ollama e modelli locali',
+         'Contenuto completo sull''AI in Italia... [contenuto generato con Ollama]',
+         'IT',
+         ARRAY['AI news', 'Machine learning', 'Italian tech'],
+         45),
 
-('Ollama 1.0: Rivoluzione dei modelli locali', 
- 'Il nuovo rilascio di Ollama porta performance migliorate per GPU NVIDIA',
- 'Articolo dettagliato su Ollama 1.0... [generato con mistral-nemo]',
- 'IT',
- ARRAY['Ollama update', 'Local LLM'], 
- 120),
+        ('Ollama 1.0: Rivoluzione dei modelli locali',
+         'Il nuovo rilascio di Ollama porta performance migliorate per GPU NVIDIA',
+         'Articolo dettagliato su Ollama 1.0... [generato con mistral-nemo]',
+         'IT',
+         ARRAY['Ollama update', 'Local LLM'],
+         120),
 
-('Google AI advancements and open source alternatives', 
- 'Analisi delle ultime novità Google AI vs modelli open source come Mistral',
- 'Comparativa completa Google vs Open Source...',
- 'US', 
- ARRAY['AI news', 'Machine learning'], 
- 200);
+        ('Google AI advancements and open source alternatives',
+         'Analisi delle ultime novità Google AI vs modelli open source come Mistral',
+         'Comparativa completa Google vs Open Source...',
+         'US',
+         ARRAY['AI news', 'Machine learning'],
+         200);
+    END IF;
+END
+$$;
 
 -- ===================================================
 -- PERMISSIONI
@@ -269,14 +291,18 @@ GRANT ALL ON SEQUENCE articles_id_seq TO newsninja;
 GRANT ALL ON SEQUENCE article_views_id_seq TO newsninja;
 GRANT ALL ON SEQUENCE countries_id_seq TO newsninja;
 GRANT ALL ON SEQUENCE trends_id_seq TO newsninja;
+GRANT ALL ON SEQUENCE article_trends_id_seq TO newsninja;
+GRANT ALL ON SEQUENCE users_id_seq TO newsninja;
+GRANT ALL ON SEQUENCE article_likes_id_seq TO newsninja;
+GRANT ALL ON SEQUENCE app_config_id_seq TO newsninja;
 
 -- ===================================================
 -- INDICI AGGIUNTIVI PER PERFORMANCE
 -- ===================================================
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_articles_trend_keywords 
+CREATE INDEX IF NOT EXISTS idx_articles_trend_keywords
 ON articles USING GIN(trend_keywords);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_views_article_time 
+CREATE INDEX IF NOT EXISTS idx_views_article_time
 ON article_views(article_id, viewed_at DESC);
 
 -- ===================================================
